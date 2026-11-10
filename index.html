@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Газетка 2.0 · плати</title>
+<meta name="description" content="Інтерактивна схема сортувальника «Газетка 2.0»: плати, роз'єми, датчики, частотники та їх розташування.">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <div class="logo">Г</div>
+    <div>
+      <div class="t">Газетка 2.0 · схеми</div>
+      <div class="s">плати · роз'єми · розташування</div>
+    </div>
+  </div>
+  <div class="search">
+    <input id="search" type="search" placeholder="Пошук: RP S12, IND U8.2, CROSSING 2, Box B…" autocomplete="off">
+    <ul id="search-res" hidden></ul>
+  </div>
+  <label class="opt"><input type="checkbox" id="opt-labels"> Підписи</label>
+  <label class="opt"><input type="checkbox" id="opt-focus" checked> Автофокус</label>
+  <div class="seg"><button data-split="1">1</button><button data-split="2">2</button></div>
+  <button id="info-toggle" class="info-btn" title="Інформація">i</button>
+</header>
+
+<main>
+  <div id="panes"></div>
+  <aside class="side">
+    <div id="info-sel" hidden></div>
+    <div id="info-help">
+      <h2>Як користуватися</h2>
+      <ul class="help">
+        <li><b>Наведіть</b> або <b>натисніть</b> на датчик, частотник, роз'єм чи плату на будь-якому виді — пов'язане підсвітиться на всіх видах.</li>
+        <li><b>Роз'єм</b> на платі показує, що до нього підключено, піни, провід і джампер 5V / 12V.</li>
+        <li><b>Плата</b> підсвічує всі свої датчики й частотники на плані та бокси, де стоять частотники.</li>
+        <li>Колесо миші / два пальці — масштаб, перетягування — зсув, ⤢ — показати все, ◎ — до виділеного.</li>
+        <li><b>Підписи</b> — постійно показувати назви на плані. <b>2</b> — два види поруч.</li>
+        <li>Esc або клік по порожньому місцю — зняти виділення.</li>
+      </ul>
+      <div class="stats" id="stats"></div>
+      <div class="draft">
+        <b>Чернетка.</b> Зібрано з PDF-схем. Верхні поверхи, ліфти та електрошафа поки не входять (показані сірим).
+        Дані редагуються в <code>js/data.js</code>.
+      </div>
+      <h3>Плати</h3>
+      <div id="board-list"></div>
+      <h3>Роз'єми NVG030_V1</h3>
+      <ul class="help small">
+        <li><b>IN</b> (верхній ряд): GND · #IN · VCC. Спрацьовує, коли #IN замкнено на GND. Джампер 5V / 12V — за живленням датчика; сигнал від іншої плати — 5V.</li>
+        <li><b>OUT</b> (нижній ряд): GND · #SIGA · #SIGB. SIGA — вихідний сигнал, SIGB — живлення. Джампер — 5V.</li>
+      </ul>
+      <h3>Припущення та розбіжності</h3>
+      <ul id="assumptions" class="help small"></ul>
+    </div>
+  </aside>
+</main>
+
+<script src="js/data.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
