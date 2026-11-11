@@ -57,6 +57,18 @@ for (const b of Object.values(BOARDS)) {
 }
 for (const d of Object.values(DEVICES)) if (d.chain) link('d:' + d.id, 'd:' + d.chain);
 
+/* Елементи електричної шафи */
+const CAB = {};   // id -> {id, type, label, text, feeds, excluded, row, door}
+CAB_ROWS.forEach((row, ri) => row.items.forEach(([id, type, w, label]) => {
+  if (type === 'gap') return;
+  const t = CAB_TABLE[id];
+  CAB[id] = { id, type, w, label: label || id, text: t ? t[0] : null, feeds: t ? t[1] : [], excluded: !!(t && t[2]), row: ri + 1 };
+}));
+CAB_DOOR.forEach(([id, type, x, y, front, back]) => CAB[id] = { id, type, label: front, text: `Двері шафи. Лицьовий бік: «${front}», на звороті позначено ${back}.`, feeds: [], door: true });
+CAB.FAN = { id: 'FAN', type: 'fan', label: 'Вентилятор', text: 'Вентилятор у боковій стінці. Керується терморегулятором TK-4.', feeds: ['k:TK-4'] };
+CAB.SWITCH.text = 'Мережевий комутатор (SWITCH). Живлення — розетка QF 1.';
+for (const c of Object.values(CAB)) for (const f of c.feeds) link('k:' + c.id, f);
+
 const boardOfConn = ref => ref.split(':')[1];
 function refExists(ref) {
   const [t, a] = ref.split(':');
@@ -64,8 +76,10 @@ function refExists(ref) {
   if (t === 'b') return !!BOARDS[ref.slice(2)];
   if (t === 'l') return !!LOCS[a];
   if (t === 'c') return !!CONNS[ref];
+  if (t === 'k') return !!CAB[ref.slice(2)];
   return false;
 }
+const isExcluded = ref => (ref[0] === 'b' && BOARDS[ref.slice(2)] && BOARDS[ref.slice(2)].excluded) || (ref[0] === 'k' && CAB[ref.slice(2)] && CAB[ref.slice(2)].excluded);
 
 /* Пов'язані елементи для виділення */
 function related(ref) {
@@ -77,6 +91,15 @@ function related(ref) {
     for (const n of EDGES.get(dref) || []) {
       if (n.startsWith('c:')) { out.add(n); out.add('b:' + boardOfConn(n)); }
       else if (n.startsWith('d:')) addDev(n, seen);
+      else if (n.startsWith('k:')) { out.add(n); out.add('l:cabinet'); }
+    }
+  };
+  const addCab = kref => {
+    out.add(kref); out.add('l:cabinet');
+    for (const n of EDGES.get(kref) || []) {
+      if (n.startsWith('d:')) addDev(n);
+      else if (n.startsWith('b:')) { out.add(n); const b = BOARDS[n.slice(2)]; if (b.loc) out.add('l:' + b.loc); }
+      else out.add(n);
     }
   };
   const addConn = (cref, deep = true) => {
@@ -89,14 +112,17 @@ function related(ref) {
   const t = ref[0];
   if (t === 'd') addDev(ref);
   else if (t === 'c') addConn(ref);
+  else if (t === 'k') addCab(ref);
   else if (t === 'b') {
     const b = BOARDS[ref.slice(2)];
     if (b.loc) out.add('l:' + b.loc);
+    for (const n of EDGES.get(ref) || []) if (n.startsWith('k:')) { out.add(n); out.add('l:cabinet'); }
     for (const c of Object.values(CONNS)) if (c.board === b.id) { out.add(c.ref); if (c.target) addConn(c.ref, false); }
   } else if (t === 'l') {
     const id = ref.slice(2);
     for (const b of Object.values(BOARDS)) if (b.loc === id) out.add('b:' + b.id);
     for (const d of Object.values(DEVICES)) if (d.vfd === id) out.add('d:' + d.id);
+    if (id === 'cabinet') for (const k in CAB) out.add('k:' + k);
   }
   return out;
 }
@@ -109,6 +135,7 @@ function refLabel(ref) {
   if (t === 'b') return id;
   if (t === 'l') return LOCS[id].name;
   if (t === 'c') return connTitle(CONNS[ref]);
+  if (t === 'k') return CAB[id].id;
   return ref;
 }
 function targetLabel(t) {
@@ -125,7 +152,8 @@ function kindColor(t) {
 /* Зона на плані за координатою */
 function zoneOf(p) {
   if (!p) return null;
-  for (const z of PLAN.zones) if (p[0] >= z[0] && p[0] <= z[0] + z[2] && p[1] >= z[1] && p[1] <= z[1] + z[3]) return z[4];
+  for (const z of PLAN.zones) if (p[0] >= z[0] && p[0] <= z[0] + z[2] && p[1] >= z[1] && p[1] <= z[1] + z[3])
+    return z[5] ? 'Магістраль · ' + (p[0] < 900 ? 'лівий' : 'правий') + ' торець' : z[4];
   const m = PLAN.magistral;
   if (p[0] >= m[0] && p[0] <= m[0] + m[2] && p[1] >= m[1] - 20 && p[1] <= m[1] + m[3] + 20) return 'Магістраль (1-й поверх)';
   if (p[1] > m[1] + m[3]) return 'Під магістраллю (рольганги 7.4 / 7.5)';
@@ -140,7 +168,7 @@ const state = {
   views: ['plan', 'boards'], split: 2,
   labels: false, autofocus: true,
 };
-const VIEWS = { plan: 'Розташування', boards: 'Плати', bus: 'RS-485' };
+const VIEWS = { plan: 'Розташування', boards: 'Бокси й плати', cab: 'Шафа', bus: 'RS-485' };
 const panes = [];  // {root, svg, world, vb, reg: Map(ref -> [el]), view}
 
 function readHash() {
@@ -480,20 +508,318 @@ function drawGroup(p, parent, locId, x, y) {
   return { w: W, h: H };
 }
 
+/* ---- Реалістичні плати та бокси (рендери з документів) ---- */
+function imgEl(parent, src, x, y, w, h, cls) {
+  return el('image', { href: src, x, y, width: w, height: h, preserveAspectRatio: 'none', class: cls || 'bimg' }, parent);
+}
+function spotLayer(p, parent, img, x, y, s) {
+  for (const [loc, lx, ly, lw, lh] of img.locs || []) {
+    const r = item(p, 'l:' + loc, el('rect', { x: x + lx * s, y: y + ly * s, width: lw * s, height: lh * s, rx: 8 }, parent), 'spot-loc');
+    el('title', {}, r, LOCS[loc].name);
+  }
+  for (const [ref, sx, sy, sw, sh, tip] of img.spots) {
+    const r = el('rect', { x: x + sx * s, y: y + sy * s, width: sw * s, height: sh * s, rx: 4 }, parent);
+    if (ref && refExists(ref)) {
+      item(p, ref, r, 'spot' + (isExcluded(ref) ? ' excluded' : ''));
+      el('title', {}, r, refLabel(ref) + (isExcluded(ref) ? ' — поза схемою' : ''));
+    } else { r.setAttribute('class', 'spot dead'); el('title', {}, r, tip || ''); }
+  }
+}
+
+const NVG_DW = 520, LAB = 150;
+function drawNVGImg(p, parent, b, x, y) {
+  const s = NVG_DW / NVG_IMG.w, DH = NVG_IMG.h * s;
+  const g = el('g', { transform: `translate(${x},${y})` }, parent);
+  const tg = item(p, 'b:' + b.id, el('g', {}, g), 'board-img' + (b.excluded ? ' excluded' : ''));
+  const iy = 46 + (b.excluded ? 0 : LAB);
+  el('text', { x: 0, y: 18, class: 'b-title2' }, tg, b.id);
+  el('text', { x: 0, y: 36, class: 'b-sub2' }, tg, [b.aka[0], 'NVG030_V1'].filter(Boolean).join(' · '));
+  el('rect', { x: -5, y: iy - 5, width: NVG_DW + 10, height: DH + 10, rx: 10, class: 'board-frame' }, tg);
+  imgEl(tg, NVG_IMG.src, 0, iy, NVG_DW, DH);
+  el('title', {}, tg, b.id + (b.role ? ' — ' + b.role : ''));
+  if (b.excluded) {
+    el('rect', { x: 0, y: iy, width: NVG_DW, height: DH, class: 'excl-veil' }, tg);
+    el('text', { x: NVG_DW / 2, y: iy + DH / 2 + 8, class: 'excl-text', 'text-anchor': 'middle' }, tg, 'поза схемою');
+    return { w: NVG_DW, h: iy + DH + 10 };
+  }
+  for (const dir of ['in', 'out']) for (let i = 0; i < 8; i++) {
+    const n = (dir === 'in' ? 'IN_' : 'OUT_') + (i + 1);
+    const c = CONNS[`c:${b.id}:${n}`];
+    const r = NVG_IMG[dir](i);
+    const cg = item(p, c.ref, el('g', {}, g), 'conn2' + (c.target ? '' : ' free'));
+    cg.style.setProperty('--c', kindColor(c.target));
+    el('rect', { x: r.x * s, y: iy + r.y * s, width: r.w * s, height: r.h * s, rx: 5, class: 'conn-hit2' }, cg);
+    const cx = (r.x + r.w / 2) * s + 4;
+    const lab = c.target ? targetLabel(c.target) : '—';
+    if (dir === 'in') {
+      el('text', { x: cx, y: iy - 10, transform: `rotate(-90 ${cx} ${iy - 10})`, class: 'conn-lab2' }, cg, lab);
+      if (c.jumper) {
+        const j = NVG_IMG.jIn(i), yy = c.jumper === '12V' ? j.y12 : j.y5;
+        el('rect', { x: j.x * s, y: iy + yy * s, width: 46 * s, height: 30 * s, rx: 3, class: 'jmp-mark jmp-' + c.jumper }, cg);
+      }
+    } else {
+      el('text', { x: cx, y: iy + DH + 10, transform: `rotate(90 ${cx} ${iy + DH + 10})`, class: 'conn-lab2' }, cg, lab);
+    }
+    el('title', {}, cg, `${b.id} · ${n} → ${lab}${c.jumper ? ' · джампер ' + c.jumper : ''}`);
+  }
+  return { w: NVG_DW, h: iy + DH + LAB };
+}
+
+const W_DW = 430;
+function drawW5500Img(p, parent, b, x, y) {
+  const s = W_DW / W5500_IMG.w, DH = W5500_IMG.h * s;
+  const g = el('g', { transform: `translate(${x},${y})` }, parent);
+  const tg = item(p, 'b:' + b.id, el('g', {}, g), 'board-img');
+  const iy = 46 + LAB;
+  el('text', { x: 0, y: 18, class: 'b-title2' }, tg, b.id);
+  el('text', { x: 0, y: 36, class: 'b-sub2' }, tg, [b.aka[0], 'CTRL5500 V1'].filter(Boolean).join(' · '));
+  el('rect', { x: -5, y: iy - 5, width: W_DW + 10, height: DH + 10, rx: 10, class: 'board-frame' }, tg);
+  imgEl(tg, W5500_IMG.src, 0, iy, W_DW, DH);
+  el('title', {}, tg, b.id + ' — ' + (b.role || ''));
+  const LX = W_DW + 40;
+  b.conns.forEach((c, k) => {
+    const C = CONNS[`c:${b.id}:${c.n}`];
+    let tgt = c.to;
+    if (!tgt) { const back = [...(EDGES.get(C.ref) || [])].find(r => r.startsWith('c:')); tgt = back ? back.slice(2) : null; }
+    const cg = item(p, C.ref, el('g', {}, g), 'conn2' + (tgt ? '' : ' free'));
+    cg.style.setProperty('--c', tgt ? kindColor(tgt) : 'var(--muted)');
+    const r = W5500_IMG.conns[c.n];
+    const rx = r[0] * s, ry = iy + r[1] * s, rw = r[2] * s, rh = r[3] * s;
+    el('rect', { x: rx, y: ry, width: rw, height: rh, rx: 4, class: 'conn-hit2' }, cg);
+    const ly = iy - 20 + k * 26;
+    el('path', { d: `M ${rx + rw} ${ry + rh / 2} L ${LX - 8} ${ly - 4}`, class: 'leader' }, cg);
+    el('text', { x: LX, y: ly, class: 'w-lab' }, cg, c.label);
+    el('text', { x: LX + 98, y: ly, class: 'conn-lab2' }, cg, tgt ? targetLabel(tgt) : '—');
+    el('title', {}, cg, `${b.id} · ${c.label} (${c.pins.join(' / ')}) → ${tgt ? targetLabel(tgt) : 'вільний'}`);
+  });
+  return { w: LX + 270, h: iy + DH + 40 };
+}
+
+function drawBoardImg(p, parent, b, x, y) { return b.type === 'w5500' ? drawW5500Img(p, parent, b, x, y) : drawNVGImg(p, parent, b, x, y); }
+
+/* Секція: креслення боксу + реалістичні плати поруч */
+function drawBoxSection(p, parent, img, title, sub, x, y, boardIds, H = 620) {
+  const g = el('g', { transform: `translate(${x},${y})` }, parent);
+  const s = H / img.h, IW = img.w * s;
+  el('rect', { x: -20, y: -20, width: 10, height: 10, class: 'sec-frame' }, g); // розмір задамо нижче
+  el('text', { x: 0, y: 6, class: 'g-title' }, g, title);
+  el('text', { x: 0, y: 26, class: 'g-sub' }, g, sub);
+  const iy = 44;
+  el('rect', { x: -4, y: iy - 4, width: IW + 8, height: H + 8, rx: 8, class: 'box-frame' }, g);
+  imgEl(g, img.src, 0, iy, IW, H, 'bimg box-img');
+  spotLayer(p, g, img, 0, iy, s);
+  // плати
+  let bx = IW + 60, by = 0, rowH = 0, maxW = bx;
+  const PER_ROW = boardIds.length === 4 ? 4 : 3;
+  boardIds.forEach((id, k) => {
+    if (k && k % PER_ROW === 0) { by += rowH + 30; rowH = 0; bx = IW + 60; }
+    const sz = drawBoardImg(p, g, BOARDS[id], bx, by);
+    bx += sz.w + 60; rowH = Math.max(rowH, sz.h); maxW = Math.max(maxW, bx);
+  });
+  let h = Math.max(iy + H + 20, by + rowH);
+  // периферія та частотники поза боксами
+  const locIds = (img.locs || []).map(l => l[0]);
+  const per = Object.values(DEVICES).filter(d => d.vfd && locIds.some(l => d.vfd === 'rmTable' + l.slice(2, 3)) && KINDS[d.kind].group === 'periph');
+  if (per.length && /^rm\d/.test(locIds[0])) {
+    const tbl = 'rmTable' + locIds[0].slice(2, 3);
+    h = drawChips(p, g, 0, h + 10, maxW, 'Периферія робочого столу:', Object.values(DEVICES).filter(d => d.vfd === tbl), tbl) + 10;
+  }
+  const fr = g.firstChild; fr.setAttribute('width', maxW + 10); fr.setAttribute('height', h + 30); fr.setAttribute('rx', 14);
+  return { w: maxW, h: h + 10 };
+}
+function drawChips(p, g, x, y, width, title, devs, locId) {
+  const tg = locId ? item(p, 'l:' + locId, el('text', { x, y, class: 'chips-title' }, g, title), 'chips-head') : el('text', { x, y, class: 'chips-title' }, g, title);
+  let cx = 0, cy = y + 10;
+  for (const d of devs) {
+    const w = Math.max(56, d.label.length * 6.6 + 16);
+    if (cx + w > width) { cx = 0; cy += 26; }
+    const cg = item(p, 'd:' + d.id, el('g', { transform: `translate(${x + cx},${cy})` }, g), 'chip');
+    cg.style.setProperty('--c', KINDS[d.kind].color);
+    el('rect', { width: w, height: 20, rx: 10 }, cg);
+    el('text', { x: w / 2, y: 14, 'text-anchor': 'middle' }, cg, d.label);
+    cx += w + 6;
+  }
+  return cy + 26;
+}
+
 function renderBoards(p) {
   const W = p.world;
-  const col = (ids, x) => {
-    let y = 0, mw = 0;
-    for (const id of ids) { const s = drawGroup(p, W, id, x, y); y += s.h + 40; mw = Math.max(mw, s.w); }
-    return { w: mw, h: y };
-  };
-  el('text', { x: 0, y: -30, class: 'col-title' }, W, 'МАГІСТРАЛЬ — бокси на рамі');
-  const a = col(['boxA', 'boxB', 'boxC', 'boxD', 'sideA', 'sideB', 'sideAR', 'sideBR'], 0);
-  const x2 = a.w + 120;
-  el('text', { x: x2, y: -30, class: 'col-title' }, W, 'РОБОЧІ МІСЦЯ — бокси над столом');
-  const b = col(['rm1b1', 'rm1b2', 'rm2b1', 'rm2b2', 'rm3b1', 'rm3b2', 'rail75', 'rmTable1', 'rmTable2', 'rmTable3'], x2);
-  p.bbox = { x: -20, y: -60, w: x2 + b.w + 40, h: Math.max(a.h, b.h) + 60 };
+  let y = 0;
+  // бокові вигляди
+  el('text', { x: 0, y: -30, class: 'col-title' }, W, 'РОЗТАШУВАННЯ БОКСІВ НА СОРТУВАЛЬНИКУ');
+  let sx = 0;
+  for (const side of SIDE_IMG) {
+    const SW = 1500, s = SW / side.w, SH = side.h * s;
+    const g = el('g', { transform: `translate(${sx},${y})` }, W);
+    el('text', { x: 0, y: 6, class: 'g-title' }, g, side.title);
+    el('rect', { x: -4, y: 20, width: SW + 8, height: SH + 8, rx: 8, class: 'box-frame' }, g);
+    imgEl(g, side.src, 0, 24, SW, SH, 'bimg box-img');
+    spotLayer(p, g, side, 0, 24, s);
+    sx += SW + 120;
+  }
+  y += 680;
+  // бокси магістралі
+  el('text', { x: 0, y: y - 30, class: 'col-title' }, W, 'МАГІСТРАЛЬ — бокси на рамі');
+  const SEC = [
+    ['boxA', 'Box A', 'Сторона A · плати COMMUTATOR, MASTER, CROSSING 1'],
+    ['boxB', 'Box B', 'Сторона A · плати CROSSING 2, CROSSING 3, CONVEYOR 2'],
+    ['boxC', 'Box C', 'Сторона B · CONVEYOR 1 (+ плати верхніх поверхів)'],
+    ['boxD', 'Box D', 'Сторона B · плати верхніх поверхів'],
+  ];
+  let maxW = 0;
+  for (const [id, t, sub] of SEC) {
+    const ids = BOX_IMG[id].spots.filter(s => s[0] && s[0].startsWith('b:')).map(s => s[0].slice(2));
+    const sz = drawBoxSection(p, W, BOX_IMG[id], t, sub, 0, y, ids);
+    y += sz.h + 90; maxW = Math.max(maxW, sz.w);
+  }
+  // окремі плати на рамі
+  el('text', { x: 0, y: y - 30, class: 'col-title' }, W, 'ОКРЕМІ ПЛАТИ НА РАМІ');
+  let lx = 0, lh = 0;
+  for (const [loc, li] of Object.entries(LONE_IMG)) {
+    const g = el('g', { transform: `translate(${lx},${y})` }, W);
+    const H = 260, s = H / li.h, IW = li.w * s;
+    el('text', { x: 0, y: 6, class: 'g-title' }, g, LOCS[loc].name);
+    el('text', { x: 0, y: 26, class: 'g-sub' }, g, li.title);
+    el('rect', { x: -4, y: 40, width: IW + 8, height: H + 8, rx: 8, class: 'box-frame' }, g);
+    imgEl(g, li.src, 0, 44, IW, H, 'bimg box-img');
+    spotLayer(p, g, Object.assign({ locs: [[loc, 0, 0, li.w, li.h]] }, li), 0, 44, s);
+    let w = IW;
+    const live = boardsByLoc(loc).filter(b => !b.excluded);
+    for (const b of live) { const sz = drawBoardImg(p, g, b, IW + 50, 0); w = IW + 50 + sz.w; lh = Math.max(lh, sz.h); }
+    lh = Math.max(lh, 320);
+    lx += w + 100;
+  }
+  y += lh + 100; maxW = Math.max(maxW, lx);
+  const yLeft = y;
+  // робочі місця — другий стовпчик
+  const X2 = maxW + 200;
+  y = 680;
+  el('text', { x: X2, y: y - 30, class: 'col-title' }, W, 'РОБОЧІ МІСЦЯ — бокси над столом');
+  let maxW2 = 0;
+  for (const r of [1, 2, 3]) {
+    const img = BOX_IMG['rm' + r];
+    const ids = img.spots.filter(s => s[0] && s[0].startsWith('b:')).map(s => s[0].slice(2));
+    const sz = drawBoxSection(p, W, img, `РМ_${r}`, `Box_1: W5500 PL${r}, P_LINE ${r} · Box_2: ${ids[2]}, ${ids[3]}`, X2, y, ids, 640);
+    y += sz.h + 90; maxW2 = Math.max(maxW2, sz.w);
+  }
+  // частотники поза боксами
+  el('text', { x: X2, y: y - 30, class: 'col-title' }, W, 'ЧАСТОТНИКИ В ОКРЕМИХ БОКСАХ НА РАМІ');
+  let rx = 0;
+  for (const loc of ['rail75', 'rail71', 'rail72', 'rail73']) {
+    const sz = drawGroup(p, W, loc, X2 + rx, y); rx += sz.w + 40;
+  }
+  y += 170;
+  p.bbox = { x: -40, y: -70, w: Math.max(X2 + Math.max(maxW2, rx), sx) + 80, h: Math.max(y, yLeft) + 80 };
   p.legend = null;
+}
+
+/* =========================================================
+   5b. Вид «Шафа»
+   ========================================================= */
+function renderCab(p) {
+  const W = p.world;
+  const U = 38, MH = 96, ROWH = 168, PX = 40, PW = 30.5 * U + 80;
+  const rows = CAB_ROWS.length;
+  const PH = 120 + rows * ROWH;
+  const g = el('g', {}, W);
+  // корпус шафи
+  el('rect', { x: -30, y: -40, width: PW + 60, height: PH + 70, rx: 10, class: 'cab-body' }, g);
+  el('rect', { x: 0, y: 0, width: PW, height: PH, rx: 4, class: 'cab-plate' }, g);
+  el('text', { x: 0, y: -60, class: 'col-title' }, g, 'ЕЛЕКТРИЧНА ШАФА — монтажна панель (за фото та таблицею автоматів)');
+  // вентилятор
+  const fg = item(p, 'k:FAN', el('g', { transform: `translate(${-30 + 4}, 30)` }, g), 'cab-item');
+  el('rect', { x: -70, y: 0, width: 64, height: 64, rx: 6, class: 'fan' }, fg);
+  el('circle', { cx: -38, cy: 32, r: 26, class: 'fan-r' }, fg);
+  el('text', { x: -38, y: 84, 'text-anchor': 'middle', class: 'cab-t' }, fg, 'Вентилятор');
+  CAB_ROWS.forEach((row, ri) => {
+    const ry = 40 + ri * ROWH;
+    // DIN-рейка
+    el('rect', { x: PX - 10, y: ry + MH / 2 - 7, width: PW - 2 * PX + 20, height: 14, class: 'din' }, g);
+    let x = PX;
+    for (const [id, type, w, label] of row.items) {
+      const iw = w * U;
+      if (type !== 'gap') drawCabItem(p, g, CAB[id], type, x, ry, iw, MH, row.nums);
+      x += iw + 2;
+    }
+    // кабель-канал під рядом
+    const dy = ry + MH + 26;
+    if (ri < rows - 1) {
+      el('rect', { x: PX - 20, y: dy, width: PW - 2 * PX + 40, height: 34, rx: 3, class: 'duct' }, g);
+      for (let xx = PX - 10; xx < PW - PX + 10; xx += 14) el('line', { x1: xx, x2: xx, y1: dy + 3, y2: dy + 12, class: 'duct-slot' }, g);
+    }
+    for (const [t, ux] of (row.label || []).concat(row.note || [])) {
+      const tx = PX + ux * U, ty = (row.note ? ry - 14 : ry - 46);
+      const lw = t.length * 7.2 + 16;
+      el('rect', { x: tx, y: ty - 14, width: lw, height: 20, rx: 2, class: 'sticker' }, g);
+      el('text', { x: tx + 8, y: ty + 1, class: 'sticker-t' }, g, t);
+    }
+  });
+  // двері
+  const DX = PW + 140, DW = 340, DHt = 700;
+  const dg = el('g', { transform: `translate(${DX},0)` }, W);
+  el('text', { x: 0, y: -60, class: 'col-title' }, dg, 'ДВЕРІ ШАФИ — лицьовий бік');
+  el('rect', { x: 0, y: -40, width: DW, height: DHt, rx: 10, class: 'door' }, dg);
+  el('rect', { x: 100, y: -10, width: 140, height: 70, rx: 4, class: 'door-win' }, dg);
+  for (const [id, type, x, y] of CAB_DOOR) drawDoorItem(p, dg, CAB[id], type, x, y + 80);
+  el('text', { x: 0, y: DHt - 10, class: 'g-sub' }, dg, 'Позначення — за написами на зворотному боці дверей');
+  p.bbox = { x: -130, y: -90, w: DX + DW + 160, h: PH + 140 };
+  p.legend = null;
+}
+
+function drawCabItem(p, parent, c, type, x, y, w, h, nums) {
+  const g = item(p, 'k:' + c.id, el('g', { transform: `translate(${x},${y})` }, parent), 'cab-item' + (c.excluded ? ' excluded' : '') + (c.feeds.length || c.text ? '' : ' plain'));
+  const isMcb = type.startsWith('mcb');
+  const lampW = type.endsWith('l') ? 38 : 0;
+  const bw = w - lampW;
+  if (type === 'bus') {
+    el('rect', { x: 0, y: h / 2 - 12, width: w, height: 24, rx: 3, class: 'busbar' }, g);
+    for (let xx = 10; xx < w; xx += 18) el('circle', { cx: xx, cy: h / 2, r: 4, class: 'screw' }, g);
+    el('text', { x: 6, y: h / 2 - 18, class: 'cab-t' }, g, c.label);
+  } else if (type === 'psu') {
+    for (let i = 0; i < 8; i++) {
+      const px = (i % 4) * (w / 4), py = Math.floor(i / 4) * 54;
+      el('rect', { x: px + 4, y: py, width: w / 4 - 8, height: 48, rx: 3, class: 'psu' }, g);
+      for (let k = 0; k < 6; k++) el('rect', { x: px + 14 + k * 14, y: py + 32, width: 9, height: 10, class: 'psu-term' }, g);
+      el('text', { x: px + 14, y: py + 20, class: 'cab-t small' }, g, 'БП ' + (i + 1));
+    }
+    el('text', { x: 0, y: 128, class: 'cab-t' }, g, c.label);
+  } else if (type === 'term') {
+    for (let k = 0; k < w / 10; k++) el('rect', { x: k * 10, y: 10, width: 8, height: h - 20, rx: 1, class: 'terminal' }, g);
+  } else {
+    el('rect', { x: 0, y: 0, width: bw, height: h, rx: 4, class: 'module' + (type === 'dev' && c.id === 'VC-411' ? ' blue' : '') + (type === 'sw' ? ' sw' : '') }, g);
+    // гвинти клем
+    for (let xx = 10; xx < bw - 4; xx += 19) { el('circle', { cx: xx, cy: 10, r: 4, class: 'screw' }, g); el('circle', { cx: xx, cy: h - 10, r: 4, class: 'screw' }, g); }
+    if (isMcb) {
+      el('rect', { x: 6, y: h / 2 + 8, width: bw - 12, height: 16, rx: 2, class: 'lever' }, g);
+      el('rect', { x: 3, y: 20, width: bw - 6, height: 24, rx: 2, class: 'tag' }, g);
+      el('text', { x: bw / 2, y: 37, 'text-anchor': 'middle', class: 'tag-t' }, g, c.id.replace(' ', ' '));
+      if (lampW) { el('rect', { x: bw + 1, y: 0, width: lampW - 2, height: h, rx: 4, class: 'module' }, g); el('circle', { cx: bw + lampW / 2, cy: h / 2 + 14, r: 12, class: 'lamp' }, g); }
+      if (nums) el('text', { x: w / 2, y: -8, 'text-anchor': 'middle', class: 'num-t' }, g, c.id.replace(/\D/g, ''));
+    } else if (type === 'sock') {
+      el('circle', { cx: bw / 2, cy: h / 2, r: 26, class: 'socket' }, g);
+      el('text', { x: bw / 2, y: h - 18, 'text-anchor': 'middle', class: 'cab-t small' }, g, 'QF 1');
+    } else {
+      if (c.id === 'TK-4') { el('rect', { x: 10, y: 22, width: bw - 20, height: 30, rx: 2, class: 'disp' }, g); el('text', { x: bw / 2, y: 44, 'text-anchor': 'middle', class: 'disp-t' }, g, '19.1'); }
+      if (c.id === 'VP-3F63A') for (let k = 0; k < 3; k++) { el('rect', { x: 10 + k * (bw - 20) / 3, y: 24, width: (bw - 20) / 3 - 6, height: 26, rx: 2, class: 'disp' }, g); el('text', { x: 10 + k * (bw - 20) / 3 + ((bw - 20) / 3 - 6) / 2, y: 43, 'text-anchor': 'middle', class: 'disp-t s' }, g, '22' + (k === 2 ? '1' : '2')); }
+      if (c.id === 'ПЗВ') el('rect', { x: bw / 2 - 8, y: 30, width: 16, height: 12, class: 'test-btn' }, g);
+      el('text', { x: bw / 2, y: h - 22, 'text-anchor': 'middle', class: 'cab-t' + (bw < 60 ? ' small' : '') }, g, c.id === 'SWITCH' ? 'SWITCH' : c.id);
+    }
+  }
+  el('title', {}, g, c.id + (c.text ? ' — ' + c.text : c.label && c.label !== c.id ? ' — ' + c.label : ''));
+}
+
+function drawDoorItem(p, parent, c, type, x, y) {
+  const g = item(p, 'k:' + c.id, el('g', { transform: `translate(${x},${y})` }, parent), 'cab-item');
+  const lab = c.label.length > 16 ? c.label.slice(0, 15) + '…' : c.label;
+  const sw = Math.max(48, lab.length * 5.6 + 12);
+  el('rect', { x: -sw / 2, y: -50, width: sw, height: 20, rx: 2, class: 'sticker' }, g);
+  el('text', { x: 0, y: -36, 'text-anchor': 'middle', class: 'sticker-t small' }, g, lab);
+  const col = { 'lamp-g': '#22c55e', 'lamp-y': '#f59e0b', 'lamp-r': '#ef4444', 'btn-g': '#16a34a', 'btn-r': '#dc2626' }[type];
+  if (type === 'key') { el('circle', { cx: 0, cy: 0, r: 16, class: 'keysw' }, g); el('rect', { x: -3, y: -10, width: 6, height: 20, class: 'keyslot' }, g); }
+  else if (type === 'estop') { el('circle', { cx: 0, cy: 0, r: 26, class: 'estop-ring' }, g); el('circle', { cx: 0, cy: 0, r: 20, class: 'estop' }, g); }
+  else { el('circle', { cx: 0, cy: 0, r: 17, class: 'bezel' }, g); el('circle', { cx: 0, cy: 0, r: 13, fill: col, class: type.startsWith('lamp') ? 'lens' : 'btn' }, g); }
+  el('text', { x: 0, y: 40, 'text-anchor': 'middle', class: 'cab-t small' }, g, c.id);
+  el('title', {}, g, c.text);
 }
 
 /* =========================================================
@@ -548,9 +874,12 @@ function renderPane(p) {
   p.view = state.views[p.i];
   p.world.innerHTML = ''; p.reg = new Map();
   p.root.querySelectorAll('[data-view]').forEach(b => b.classList.toggle('on', b.dataset.view === p.view));
-  ({ plan: renderPlan, boards: renderBoards, bus: renderBus })[p.view](p);
-  p.root.querySelector('.pane-title').textContent =
-    p.view === 'plan' ? 'План сортувальника — спрощено, не в масштабі' : p.view === 'boards' ? 'Плати в боксах · роз\'єми IN (зверху) та OUT (знизу)' : 'Порядок підключення RS-485';
+  ({ plan: renderPlan, boards: renderBoards, cab: renderCab, bus: renderBus })[p.view](p);
+  p.root.querySelector('.pane-title').textContent = {
+    plan: 'План сортувальника — спрощено, не в масштабі',
+    boards: 'Бокси (креслення з документа) і плати · роз\'єми IN зверху, OUT знизу',
+    cab: 'Електрична шафа — автомати та що вони живлять',
+    bus: 'Порядок підключення RS-485' }[p.view];
   const lg = p.root.querySelector('.pane-legend');
   lg.innerHTML = p.legend ? p.legend.map(([k, t]) => `<span><i style="--c:${KINDS[k].color}" class="lg-${KINDS[k].group}"></i>${t}</span>`).join('') + '<span><i class="lg-dash"></i>припущення</span>' : '';
   lg.style.display = p.legend ? '' : 'none';
@@ -671,6 +1000,7 @@ function devCard(d) {
       <h3>${esc(d.label)}</h3>
       <div class="row">Підключено до: ${cs.length ? cs.map(r => chip(r, connTitle(CONNS[r]), 'var(--accent)')).join(' ') : '<span class="muted">' + (d.unconnected ? 'порт не вказано' : '—') + '</span>'}</div>
       ${chain.length ? `<div class="row">Через: ${chain.map(r => chip(r, refLabel(r), KINDS[DEVICES[r.slice(2)].kind].color)).join(' ')}</div>` : ''}
+      ${conns.some(r => r.startsWith('k:')) ? `<div class="row">Живлення: ${conns.filter(r => r.startsWith('k:')).map(r => chip(r, refLabel(r), '#f97316') + ` <span class="muted">${esc(CAB[r.slice(2)].text || '')}</span>`).join(' ')}</div>` : ''}
       ${devDetails(d)}
       ${cs.length ? `<table class="pins"><tr><th>Пін</th><th>Провід</th></tr>${connRows(CONNS[cs[0]])}</table>` : ''}
     </div>`;
@@ -690,6 +1020,7 @@ function boardCard(b) {
       <div class="row">Де: ${b.loc ? chip('l:' + b.loc, LOCS[b.loc].name) : '—'} <span class="muted">${esc(LOCS[b.loc] ? LOCS[b.loc].side : '')}</span></div>
       ${b.role ? `<p>${esc(b.role)}</p>` : ''}
       ${bus ? `<div class="row">RS-485: ${bus}</div>` : ''}
+      ${[...(EDGES.get('b:' + b.id) || [])].filter(r => r.startsWith('k:')).map(r => `<div class="row">Живлення: ${chip(r, refLabel(r), '#f97316')} <span class="muted">${esc(CAB[r.slice(2)].text || '')}</span></div>`).join('')}
       ${b.note ? `<p class="note">${esc(b.note)}</p>` : ''}
       ${b.excluded ? '<p class="note warn">Поза поточною схемою.</p>' : `<table class="pins conns"><tr><th>Роз'єм</th><th>Дж.</th><th>Підключено</th></tr>${rows}</table>`}
     </div>`;
@@ -709,13 +1040,30 @@ function locCard(id) {
     </div>`;
 }
 
+function cabCard(c) {
+  const feeds = c.feeds.map(r => refExists(r) ? chip(r, refLabel(r), r[0] === 'd' ? KINDS[DEVICES[r.slice(2)].kind].color : 'var(--accent)') : '').join(' ');
+  const back = [...(EDGES.get('k:' + c.id) || [])].filter(r => r.startsWith('k:') && !c.feeds.includes(r));
+  const sfOf = r => [...(EDGES.get(r) || [])].filter(x => x.startsWith('k:'));
+  return `
+    <div class="card">
+      <div class="k">Електрична шафа${c.row ? ' · ряд ' + c.row : c.door ? ' · двері' : ''}</div>
+      <h3>${esc(c.id)}</h3>
+      ${c.label && c.label !== c.id ? `<div class="row muted">${esc(c.label)}</div>` : ''}
+      ${c.text ? `<p>${esc(c.text)}</p>` : ''}
+      ${feeds ? `<div class="row">Живить: ${feeds}</div>` : ''}
+      ${back.length ? `<div class="row">Живлення від: ${back.map(r => chip(r, refLabel(r))).join(' ')}</div>` : ''}
+      ${c.feeds.filter(r => r[0] === 'd').map(r => { const d = DEVICES[r.slice(2)]; return d.vfd ? `<div class="row muted">${esc(d.label)} — частотник у ${chip('l:' + d.vfd, LOCS[d.vfd].name)}</div>` : ''; }).join('')}
+      ${c.excluded ? '<p class="note warn">Верхні поверхи / ліфти — поза поточною схемою.</p>' : ''}
+    </div>`;
+}
+
 function renderInfo() {
   const ref = state.hover || state.sel;
   const box = $('#info-sel');
   if (!ref) { box.innerHTML = ''; box.hidden = true; $('#info-help').hidden = false; return; }
   const t = ref[0], id = ref.slice(2);
   box.innerHTML = (state.sel && !state.hover ? '<button class="clear" id="clear-sel">✕ зняти виділення</button>' : '') +
-    (t === 'c' ? connCard(CONNS[ref]) : t === 'd' ? devCard(DEVICES[id]) : t === 'b' ? boardCard(BOARDS[id]) : locCard(id));
+    (t === 'c' ? connCard(CONNS[ref]) : t === 'd' ? devCard(DEVICES[id]) : t === 'b' ? boardCard(BOARDS[id]) : t === 'k' ? cabCard(CAB[id]) : locCard(id));
   box.hidden = false; $('#info-help').hidden = true;
   const cl = $('#clear-sel'); if (cl) cl.onclick = () => select(null);
 }
@@ -728,13 +1076,14 @@ for (const d of Object.values(DEVICES)) INDEX.push({ ref: 'd:' + d.id, t: d.labe
 for (const b of Object.values(BOARDS)) INDEX.push({ ref: 'b:' + b.id, t: b.id, s: b.aka.join(' ') + ' плата', c: 'var(--accent)' });
 for (const c of Object.values(CONNS)) INDEX.push({ ref: c.ref, t: connTitle(c), s: (c.target ? targetLabel(c.target) : 'вільний') + ' ' + c.board.replace(' ', ''), c: 'var(--muted)' });
 for (const [id, L] of Object.entries(LOCS)) INDEX.push({ ref: 'l:' + id, t: L.name, s: L.side + ' бокс box', c: 'var(--muted)' });
+for (const c of Object.values(CAB)) INDEX.push({ ref: 'k:' + c.id, t: c.id, s: [c.label, c.text || '', 'шафа автомат'].join(' '), c: '#f97316' });
 const norm = s => s.toLowerCase().replace(/[\s_·.()-]+/g, '');
 
 function setupSearch() {
   const inp = $('#search'), list = $('#search-res');
   let cur = -1, res = [];
   const draw = () => {
-    list.innerHTML = res.map((r, i) => `<li data-i="${i}" class="${i === cur ? 'on' : ''}"><i style="--c:${r.c}"></i><b>${esc(r.t)}</b><span>${esc(r.ref[0] === 'c' ? (CONNS[r.ref].target ? targetLabel(CONNS[r.ref].target) : 'вільний') : r.ref[0] === 'd' ? KINDS[DEVICES[r.ref.slice(2)].kind].short : r.ref[0] === 'b' ? 'плата' : 'місце')}</span></li>`).join('');
+    list.innerHTML = res.map((r, i) => `<li data-i="${i}" class="${i === cur ? 'on' : ''}"><i style="--c:${r.c}"></i><b>${esc(r.t)}</b><span>${esc(r.ref[0] === 'c' ? (CONNS[r.ref].target ? targetLabel(CONNS[r.ref].target) : 'вільний') : r.ref[0] === 'd' ? KINDS[DEVICES[r.ref.slice(2)].kind].short : r.ref[0] === 'b' ? 'плата' : r.ref[0] === 'k' ? 'шафа' : 'місце')}</span></li>`).join('');
     list.hidden = !res.length;
   };
   inp.addEventListener('input', () => {
