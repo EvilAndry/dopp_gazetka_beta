@@ -177,6 +177,18 @@ svg text { fill: var(--text); font-size: 12px; }
 .w-lab { font-size: 11px; font-weight: 700; fill: #fef9c3; }
 .has-sel .conn2:not(.rel) { opacity: .3; }
 
+/* коди помилок */
+.screen-hint { fill: rgba(0,0,0,.55); stroke: #f59e0b; stroke-width: 1.5; }
+.screen-t { font-size: 15px; font-weight: 800; fill: #fbbf24 !important; pointer-events: none; }
+.screen-t.s { font-size: 9px; font-weight: 600; }
+.err-h { margin: 14px 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+details.err { border: 1px solid rgba(245,158,11,.35); background: rgba(245,158,11,.06); border-radius: 8px; padding: 6px 10px; margin: 6px 0; }
+details.err summary { cursor: pointer; }
+.err-code { font-family: ui-monospace, Consolas, monospace; font-weight: 700; color: #fbbf24; }
+details.err p { margin: 6px 0; font-size: 13px; }
+details.err ol { margin: 4px 0 6px; padding-left: 20px; font-size: 13px; }
+.row.small { font-size: 12px; }
+
 /* шафа */
 .cab-body { fill: #2a313d; stroke: #3c4657; }
 .cab-plate { fill: #9ca3af; }

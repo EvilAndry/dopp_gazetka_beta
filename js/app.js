@@ -536,6 +536,13 @@ function drawNVGImg(p, parent, b, x, y) {
   el('text', { x: 0, y: 36, class: 'b-sub2' }, tg, [b.aka[0], 'NVG030_V1'].filter(Boolean).join(' · '));
   el('rect', { x: -5, y: iy - 5, width: NVG_DW + 10, height: DH + 10, rx: 10, class: 'board-frame' }, tg);
   imgEl(tg, NVG_IMG.src, 0, iy, NVG_DW, DH);
+  const role = !b.excluded && errorRole(b), nErr = role ? ERROR_ROLES[role].errors.length : 0;
+  if (nErr) { // позначка на екрані плати
+    const sx = 285 * s, sy = iy + 560 * s;
+    el('rect', { x: sx, y: sy, width: 300 * s, height: 205 * s, rx: 4, class: 'screen-hint' }, tg);
+    el('text', { x: sx + 150 * s, y: sy + 95 * s, 'text-anchor': 'middle', class: 'screen-t' }, tg, '⚠ ' + nErr);
+    el('text', { x: sx + 150 * s, y: sy + 150 * s, 'text-anchor': 'middle', class: 'screen-t s' }, tg, 'коди помилок');
+  }
   el('title', {}, tg, b.id + (b.role ? ' — ' + b.role : ''));
   if (b.excluded) {
     el('rect', { x: 0, y: iy, width: NVG_DW, height: DH, class: 'excl-veil' }, tg);
@@ -1005,6 +1012,26 @@ function devCard(d) {
       ${cs.length ? `<table class="pins"><tr><th>Пін</th><th>Провід</th></tr>${connRows(CONNS[cs[0]])}</table>` : ''}
     </div>`;
 }
+function errorsBlock(b) {
+  const role = errorRole(b); if (!role) return '';
+  const R = ERROR_ROLES[role];
+  if (!R.errors.length) return `<h4 class="err-h">Коди помилок на екрані</h4><p class="note">Роль «${esc(R.name)}»: помилок не передбачено.${R.note ? ' ' + esc(R.note) : ''}</p>`;
+  const busNodes = () => {
+    if (role === 'master') return BUS.main.filter(id => id !== b.id).concat(BUS.side.map(s => s[1]));
+    const ch = BUS.rm.find(c => c[0] === b.id); return ch ? ch.slice(1) : [];
+  };
+  const inDevs = () => Object.values(CONNS).filter(c => c.board === b.id && c.dir === 'in' && c.target && !c.target.includes(':')).map(c => c.target);
+  return `<h4 class="err-h">Коди помилок на екрані · роль «${esc(R.name)}»</h4>` + R.errors.map((e, i) => {
+    let chk = '';
+    if (e.check === 'bus') chk = `<div class="row small">Можливі вузли X: ${busNodes().map(id => chip('b:' + id, id, BOARDS[id].excluded ? 'var(--muted)' : 'var(--accent)')).join(' ')}</div>`;
+    if (e.check === 'in') { const ds = inDevs(); if (ds.length) chk = `<div class="row small">Датчики цієї плати: ${ds.map(id => chip('d:' + id, DEVICES[id].label, KINDS[DEVICES[id].kind].color)).join(' ')}</div>`; }
+    return `<details class="err"${i === 0 ? ' open' : ''}><summary><span class="err-code">${esc(e.code)}</span></summary>
+      <p><b>Чому:</b> ${esc(e.why)}</p>
+      <p><b>Що робити:</b></p><ol>${e.fix.map(f => `<li>${esc(f)}</li>`).join('')}</ol>
+      ${e.note ? `<p class="note">${esc(e.note)}</p>` : ''}${chk}</details>`;
+  }).join('');
+}
+
 function boardCard(b) {
   const rows = Object.values(CONNS).filter(c => c.board === b.id).map(c => {
     const t = c.target;
@@ -1022,7 +1049,8 @@ function boardCard(b) {
       ${bus ? `<div class="row">RS-485: ${bus}</div>` : ''}
       ${[...(EDGES.get('b:' + b.id) || [])].filter(r => r.startsWith('k:')).map(r => `<div class="row">Живлення: ${chip(r, refLabel(r), '#f97316')} <span class="muted">${esc(CAB[r.slice(2)].text || '')}</span></div>`).join('')}
       ${b.note ? `<p class="note">${esc(b.note)}</p>` : ''}
-      ${b.excluded ? '<p class="note warn">Поза поточною схемою.</p>' : `<table class="pins conns"><tr><th>Роз'єм</th><th>Дж.</th><th>Підключено</th></tr>${rows}</table>`}
+      ${b.excluded ? '' : errorsBlock(b)}
+      ${b.excluded ? '<p class="note warn">Поза поточною схемою.</p>' : `<h4 class="err-h">Роз'єми</h4><table class="pins conns"><tr><th>Роз'єм</th><th>Дж.</th><th>Підключено</th></tr>${rows}</table>`}
     </div>`;
 }
 function locCard(id) {
@@ -1073,7 +1101,11 @@ function renderInfo() {
    ========================================================= */
 const INDEX = [];
 for (const d of Object.values(DEVICES)) INDEX.push({ ref: 'd:' + d.id, t: d.label, s: [d.id, d.alt || '', KINDS[d.kind].short, d.note || ''].join(' '), c: KINDS[d.kind].color });
-for (const b of Object.values(BOARDS)) INDEX.push({ ref: 'b:' + b.id, t: b.id, s: b.aka.join(' ') + ' плата', c: 'var(--accent)' });
+for (const b of Object.values(BOARDS)) {
+  const role = !b.excluded && errorRole(b);
+  const codes = role ? ERROR_ROLES[role].errors.map(e => e.code + ' помилка').join(' ') : '';
+  INDEX.push({ ref: 'b:' + b.id, t: b.id, s: b.aka.join(' ') + ' плата ' + codes, c: 'var(--accent)' });
+}
 for (const c of Object.values(CONNS)) INDEX.push({ ref: c.ref, t: connTitle(c), s: (c.target ? targetLabel(c.target) : 'вільний') + ' ' + c.board.replace(' ', ''), c: 'var(--muted)' });
 for (const [id, L] of Object.entries(LOCS)) INDEX.push({ ref: 'l:' + id, t: L.name, s: L.side + ' бокс box', c: 'var(--muted)' });
 for (const c of Object.values(CAB)) INDEX.push({ ref: 'k:' + c.id, t: c.id, s: [c.label, c.text || '', 'шафа автомат'].join(' '), c: '#f97316' });
